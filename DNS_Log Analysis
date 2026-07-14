@@ -1,0 +1,92 @@
+# DNS Log Analysis with Splunk SIEM
+
+## Why DNS Logs Matter
+Every device on a network generates DNS traffic before it connects to almost anything else — websites, cloud services, malware command-and-control servers included. That makes DNS logs one of the earliest and most reliable places to spot suspicious behavior, often before a firewall or endpoint agent ever notices. This project walks through ingesting a sample DNS dataset into Splunk and running a structured triage pass over it.
+
+## What You'll Need
+- A working Splunk instance (free Enterprise trial or a home-lab install works fine).
+- A sample DNS log file. The [SecRepo MACCDC 2012 dataset](https://www.secrepo.com/maccdc2012/dns.log.gz) is a solid free option for practice.
+
+## Part 1: Getting the Data Into Splunk
+
+**1. Grab a sample file**
+Download the DNS log file and confirm it includes the fields you'll actually want to pivot on — source/destination IP, queried domain, query type, and response code.
+
+**2. Start the upload**
+From the Splunk web console, go to **Settings → Add Data**, then choose **Upload** as your input method.
+
+**3. Select the file**
+Browse to the log file you downloaded and select it.
+
+**4. Assign a source type**
+Splunk will try to auto-detect the format. For DNS data, either accept a matching built-in source type or define a custom one (e.g., `dnslog`) so future searches are consistent.
+
+**5. Check the input settings**
+Confirm the index, host value, and source type all look right before finalizing — fixing this after the fact is more annoying than getting it right up front.
+
+**6. Submit**
+Review one more time, then click through to complete the upload.
+
+**7. Confirm it landed**
+Head to the search bar and run a quick check:
+
+```spl
+index=<your_index> sourcetype=<your_sourcetype>
+```
+
+If events are returning, you're ready to analyze.
+
+## Part 2: Working the Data
+
+### Step 1 — Confirm volume and time range
+Before diving into specifics, get a sense of scale:
+
+```spl
+index=* sourcetype=dnslog
+```
+
+Note the total event count and the time span covered — this context matters when you're judging whether a spike is meaningful.
+
+### Step 2 — Baseline the domain landscape
+Get a full picture of what's being queried across the environment:
+
+```spl
+index=* sourcetype=dnslog | stats count by Domain
+```
+
+This is your baseline. Skim through it for anything that looks encoded, unusually long, or structurally odd — these are common signs of DNS tunneling or algorithm-generated domains (DGAs).
+
+### Step 3 — Narrow to the noisiest domains
+Full baselines are useful but slow to review one row at a time. Pull the highest-volume domains instead:
+
+```spl
+index=* sourcetype=dnslog | top limit=30 Domain
+```
+
+Most of what shows up here will be legitimate infrastructure traffic (OS update checks, time sync services, vendor telemetry). Keep an eye out for anything tied to legacy name-resolution protocols like WPAD or ISATAP — both have a history of being abused for spoofing and relay attacks, so high volume there is worth a second look even if it turns out benign.
+
+### Step 4 — Attribute traffic to its source
+Once a domain catches your attention, find out which hosts are actually generating that traffic:
+
+```spl
+index=* sourcetype=dnslog Domain="<domain_of_interest>" | top limit=10 Src_IP
+```
+
+Pay attention to concentration — if one host accounts for a disproportionate share of queries to a single domain, that's a pattern worth investigating further, even if the domain itself is legitimate.
+
+### Step 5 — Validate against raw events
+Stats output is a summary, not proof. Pull the underlying events to check query types (A, PTR, NB, etc.) and response codes (NOERROR, NXDOMAIN, REFUSED) before drawing conclusions:
+
+```spl
+index=* sourcetype=dnslog Domain="<domain_of_interest>" Src_IP="<ip_of_interest>"
+```
+
+A high rate of NXDOMAIN responses from a single host, for instance, can indicate a DGA-based malware family cycling through candidate domains.
+
+### Step 6 — Cross-check against threat intel
+For any domain that still looks suspicious after the steps above, check it against a reputation source such as VirusTotal before treating it as confirmed malicious.
+
+## Takeaways
+DNS triage is really a funnel: start broad to understand normal traffic, narrow to what's high-volume or structurally unusual, attribute it to a source, and validate against raw events before concluding anything. That funnel — baseline → narrow → attribute → validate — is a pattern that transfers directly to other log types, not just DNS.
+
+Adapt field names and source types to whatever your own environment uses. Happy hunting.
