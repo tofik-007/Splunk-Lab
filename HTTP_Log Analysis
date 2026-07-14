@@ -1,0 +1,109 @@
+# HTTP Log Analysis with Splunk SIEM
+
+## Why HTTP Logs Matter
+Web traffic logs capture the full story of how users and systems interact with a web server — every request, every response, every user agent string. That makes them a rich source for spotting reconnaissance, brute-force attempts, and abnormal access patterns, but only if you know how to cut through the volume. This project covers ingesting a sample HTTP dataset into Splunk and running a structured pass to surface what actually matters.
+
+## What You'll Need
+- A working Splunk instance.
+- A sample HTTP access log. The [SecRepo MACCDC 2012 dataset](https://www.secrepo.com/maccdc2012/http.log.gz) works well for this.
+
+## Part 1: Getting the Data Into Splunk
+
+**1. Prepare the log file**
+Download the sample and verify it contains the fields you'll need later: timestamp, request method, URI, status code, and user agent at minimum.
+
+**2. Kick off the upload**
+In the Splunk web console, navigate to **Settings → Add Data** and pick **Upload**.
+
+**3. Choose the file**
+Select the HTTP log file from your local system.
+
+**4. Set the source type**
+Use a matching built-in type like `access_combined` if it fits, or define your own (e.g., `httplog`) for clarity in future searches.
+
+**5. Double-check the input config**
+Confirm index, host, and source type are all set correctly before submitting.
+
+**6. Finish the upload**
+Review the settings one final time and submit.
+
+**7. Verify the data landed**
+Run a quick search to confirm events are indexed:
+
+```spl
+index=<your_index> sourcetype=<your_sourcetype>
+```
+
+## Part 2: Working the Data
+
+### Step 1 — Get oriented
+Start with a general pull to understand event volume and time range before narrowing your focus:
+
+```spl
+index=* sourcetype=httplog
+```
+
+### Step 2 — Break down request methods
+Understanding the mix of GET vs. POST vs. other methods gives you a feel for what kind of traffic dominates:
+
+```spl
+index=* sourcetype=httplog | stats count by method
+```
+
+An unusually high volume of POST requests to endpoints that shouldn't see much write activity is worth flagging.
+
+### Step 3 — Find the most-requested endpoints
+```spl
+index=* sourcetype=httplog | top limit=10 uri
+```
+
+This surfaces both your legitimate high-traffic pages and any endpoints being hit far more than expected — a sign of scanning or automated probing.
+
+### Step 4 — Review response code distribution
+```spl
+index=* sourcetype=httplog | stats count by status
+```
+
+Then isolate the errors specifically:
+
+```spl
+index=* sourcetype=httplog | stats count by status | where status >= 400
+```
+
+A cluster of 401/403 responses from the same source often points to credential brute-forcing or unauthorized access attempts. A spike in 500-series errors is more likely a stability or exploitation issue on the server side.
+
+### Step 5 — Look at traffic volume over time
+```spl
+index=* sourcetype=httplog | timechart span=1h count
+```
+
+Sudden spikes outside normal business patterns are worth cross-referencing with the endpoint and source IP data from the previous steps.
+
+### Step 6 — Investigate specific sources
+Once a source IP looks suspicious from the previous steps, pull everything tied to it:
+
+```spl
+index=* sourcetype=httplog src_ip="<ip_of_interest>"
+```
+
+### Step 7 — Watch for authentication abuse
+If your logs capture login activity:
+
+```spl
+index=* sourcetype=httplog action="login" status="failed" | stats count by user
+```
+
+Multiple failed attempts against the same account (or one source IP cycling through many accounts) is a textbook brute-force signature.
+
+### Step 8 — Profile session behavior
+```spl
+index=* sourcetype=httplog | stats range(_time) as session_duration by session_id
+| stats avg(session_duration) as avg_session_duration by user
+```
+
+Unusually long sessions or ones with abnormal request cadence can indicate automated tooling rather than a human user.
+
+## Takeaways
+The same funnel applies here as with any log source: orient yourself with volume and time range, break traffic down by method/endpoint/status to find outliers, then pivot to source attribution and raw-event validation. HTTP logs specifically reward paying close attention to status code clusters and endpoint targeting — that's usually where the earliest signs of scanning or brute-forcing show up.
+
+Adjust field names to match your own data model. Happy hunting.
